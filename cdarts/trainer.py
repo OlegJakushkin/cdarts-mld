@@ -181,8 +181,8 @@ class CdartsTrainer(object):
 
             self._clip_grad_norm(model)
             optimizer.step()
-            prec1, prec5 = accuracy(logits_main, y, topk=(1, 5))
-            metrics = {"prec1": prec1, "prec5": prec5, "loss": loss}
+            prec1 = accuracy(logits_main, y, topk=(1,))
+            metrics = {"prec1": prec1, "loss": loss}
             metrics = reduce_metrics(metrics, self.distributed)
             meters.update(metrics)
             if self.main_proc and (step % self.log_frequency == 0 or step + 1 == self.steps_per_epoch):
