@@ -34,7 +34,7 @@ class SearchConfig(BaseConfig):
     def build_parser(self):
         parser = get_parser("Search config")
         ########### basic settings ############
-        parser.add_argument('--dataset', default='cifar10', choices=['cifar10', 'cifar100', 'imagenet'])
+        parser.add_argument('--dataset', default='cifar10', choices=['cifar10', 'cifar100', 'imagenet', 'mld'])
         parser.add_argument('--n_classes', type=int, default=10)
         parser.add_argument('--stem_multiplier', type=int, default=3)
         parser.add_argument('--init_channels', type=int, default=16)
@@ -45,6 +45,7 @@ class SearchConfig(BaseConfig):
         parser.add_argument('--seed', type=int, default=0, help='random seed')
         parser.add_argument('--workers', type=int, default=4, help='# of workers')
         parser.add_argument('--steps_per_epoch', type=int, default=None, help='how many steps per epoch, use None for one pass of dataset')
+        parser.add_argument('--fake_batch', type=int, default=None, help='how many fake_batch per step to use (not same as batch size)')
 
         ########### learning rate ############
         parser.add_argument('--w_lr', type=float, default=0.05, help='lr for weights')

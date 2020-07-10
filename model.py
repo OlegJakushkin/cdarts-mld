@@ -68,7 +68,7 @@ class Model(nn.Module):
 
     def __init__(self, dataset, n_layers, in_channels=3, channels=16, n_nodes=4, retrain=False, shared_modules=None):
         super().__init__()
-        assert dataset in ["cifar10", "imagenet"]
+        assert dataset in ["cifar10", "imagenet", "mld"]
         self.dataset = dataset
         self.input_size = 32 if dataset == "cifar" else 224
         self.in_channels = in_channels
@@ -82,6 +82,11 @@ class Model(nn.Module):
                 self.aux_size = {n_layers // 3: 6, 2 * n_layers // 3: 6}
         elif dataset == "imagenet":
             self.n_classes = 1000
+            self.aux_head_class = AuxiliaryHeadImageNet if retrain else DistillHeadImagenet
+            if not retrain:
+                self.aux_size = {n_layers // 3: 6, 2 * n_layers // 3: 5}
+        elif dataset == "mld":
+            self.n_classes = 2
             self.aux_head_class = AuxiliaryHeadImageNet if retrain else DistillHeadImagenet
             if not retrain:
                 self.aux_size = {n_layers // 3: 6, 2 * n_layers // 3: 5}
