@@ -93,10 +93,11 @@ class SearchConfig(BaseConfig):
 class RetrainConfig(BaseConfig):
     def build_parser(self):
         parser = get_parser("Retrain config")
-        parser.add_argument('--dataset', default="cifar10", choices=['cifar10', 'cifar100', 'imagenet'])
+        parser.add_argument('--dataset', default="cifar10", choices=['cifar10', 'cifar100', 'imagenet', 'mld'])
         parser.add_argument('--data_dir', type=str, default='data/cifar', help='cifar dataset')
         parser.add_argument('--output_path', type=str, default='./outputs', help='')
-        parser.add_argument("--arc_checkpoint", type=str, default="epoch_02.json")
+        parser.add_argument("--arc_checkpoint", type=str,  default="epoch_31.json")
+        parser.add_argument("--model_checkpoint", type=str,  default="model_O.pt")
         parser.add_argument('--log_frequency', type=int, default=10, help='print frequency')
 
         ########### model settings ############

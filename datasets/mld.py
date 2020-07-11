@@ -20,8 +20,8 @@ def _mld_dataset(config):
         train_dir,
         transforms.Compose([
             transforms.Resize((224,224)),
-            #transforms.RandomHorizontalFlip(),
-            #transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
         ]))
 
@@ -29,8 +29,8 @@ def _mld_dataset(config):
         test_dir,
         transforms.Compose([
             transforms.Resize((224,224)),
-            #transforms.RandomHorizontalFlip(),
-            #transforms.RandomVerticalFlip(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
         ]))
 

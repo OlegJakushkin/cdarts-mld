@@ -78,6 +78,14 @@ def train(logger, config, train_loader, model, optimizer, criterion, epoch, main
         meters.update(metrics)
 
         if main_proc and (step % config.log_frequency == 0 or step + 1 == len(train_loader)):
+            torch.save(
+                {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': totall_l,
+                    'model': model
+                }, 'model_' + str(epoch) + '.pt');
             logger.info("Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, steps, meters)
 
     if main_proc:
@@ -99,8 +107,7 @@ def validate(logger, config, valid_loader, model, criterion, epoch, main_proc):
             meters.update(metrics)
 
             if main_proc and (step % config.log_frequency == 0 or step + 1 == len(valid_loader)):
-                torch.save(model, 'model' + str(epoch) + '.pt')
-                logger.info("Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, len(valid_loader), meters)
+                logger.info("v Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, len(valid_loader), meters)
 
     if main_proc:
         torch.save(model, 'model_final' + '.pt')
@@ -168,8 +175,29 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), config.lr, momentum=config.momentum, weight_decay=config.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs, eta_min=1E-6)
 
-    best_top1 = best_top5 = 0.
-    for epoch in range(config.epochs):
+    best_top1 = 0.
+    epoch =0
+    try:
+        checkpoint = torch.load(config.model_checkpoint)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        epoch = checkpoint['epoch']
+        loss = checkpoint['loss']
+
+        model.eval()
+        print("----------------------------")
+        print("MODEL LOADED FROM CHECKPOINT" + config.model_checkpoint)
+        print("----------------------------")
+    except:
+        print("----------------------------")
+        print("MODEL NOT LOADED FROM CHECKPOINT")
+        print("----------------------------")
+        pass
+
+    for epoch in range(0, epoch):
+        lr_scheduler.step()
+        
+    for epoch in range(epoch, config.epochs):
         drop_prob = config.drop_path_prob * epoch / config.epochs
         if config.distributed:
             model.module.drop_path_prob(drop_prob)
@@ -183,7 +211,6 @@ def main():
         # validation
         top1 = validate(logger, config, valid_loader, model, criterion, epoch, main_proc)
         best_top1 = max(best_top1, top1)
-        #best_top5 = max(best_top5, top5)
         lr_scheduler.step()
 
     logger.info("Final best Prec@1 = %.4f", best_top1)
