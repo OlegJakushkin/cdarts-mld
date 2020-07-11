@@ -3,7 +3,7 @@ SGPU=0
 EGPU=$[NGPUS+SGPU-1]
 GPU_ID=`seq -s , $SGPU $EGPU`
 CUDA_VISIBLE_DEVICES=$GPU_ID python -m torch.distributed.launch --nproc_per_node=$NGPUS retrain.py \
-    --dataset cifar10 --n_classes 2 --init_channels 36 --stem_multiplier 3 \
+    --dataset cifar10 --n_classes 2 --init_channels 16 --stem_multiplier 1 \
     --arc_checkpoint 'epoch_31.json' \
     --batch_size 128 --workers 1 --log_frequency 10 \
     --world_size $NGPUS --weight_decay 5e-4 \
