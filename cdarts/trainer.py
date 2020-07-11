@@ -186,8 +186,10 @@ class CdartsTrainer(object):
                 loss = self.criterion(logits_main, y)/self.fake_batch
                 loss.backward()
                 totall_l += loss
-                prec1 = accuracy(logits_main, y, topk=(1,)) /self.fake_batch
+                prec1,prec1 = accuracy(logits_main, y, topk=(1,1))
+                prec1 = prec1/self.fake_batch
                 totall_p += prec1
+
 
             self._clip_grad_norm(model)
             optimizer.step()

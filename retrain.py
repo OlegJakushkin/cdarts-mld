@@ -66,9 +66,11 @@ def validate(logger, config, valid_loader, model, criterion, epoch, main_proc):
             meters.update(metrics)
 
             if main_proc and (step % config.log_frequency == 0 or step + 1 == len(valid_loader)):
+                torch.save(model, 'model' + str(epoch) + '.pt')
                 logger.info("Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, len(valid_loader), meters)
 
     if main_proc:
+        torch.save(model, 'model_final' + '.pt')
         logger.info("Train: [%d/%d] Final Prec@1 %.4f Prec@5 %.4f", epoch + 1, config.epochs, meters.prec1.avg, meters.prec5.avg)
     return meters.prec1.avg, meters.prec5.avg
 
