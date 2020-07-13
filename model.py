@@ -70,7 +70,7 @@ class Model(nn.Module):
         super().__init__()
         assert dataset in ["cifar10", "imagenet", "mld"]
         self.dataset = dataset
-        self.input_size = 32 if dataset == "cifar" else 224
+        self.input_size = 32 if dataset == "cifar" else 512
         self.in_channels = in_channels
         self.channels = channels
         self.n_nodes = n_nodes

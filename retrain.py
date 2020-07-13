@@ -46,7 +46,7 @@ class CyclicIterator:
             return next(self.iterator)
 
 
-def train(logger, config, train_loader, model, optimizer, criterion, epoch, main_proc, fake_batch=8, steps=150):
+def train(logger, config, train_loader, model, optimizer, criterion, epoch, main_proc, fake_batch=4, steps=280):
     meters = AverageMeterGroup()
     cur_lr = optimizer.param_groups[0]["lr"]
     if main_proc:
@@ -150,7 +150,7 @@ def main():
     genotypes = utils.parse_results(fixed_arc, n_nodes=4)
     genotypes_dict = {i: genotypes for i in range(3)}
     apply_fixed_architecture(model, fixed_arc_path)
-    param_size = utils.param_size(model, criterion,  [3, 224, 224])
+    param_size = utils.param_size(model, criterion,  [3, 512, 512])
 
     if main_proc:
         logger.info("Param size: %.6f", param_size)
@@ -172,8 +172,8 @@ def main():
         apex.parallel.convert_syncbn_model(model)
         model = DistributedDataParallel(model, delay_allreduce=True)
 
-    optimizer = torch.optim.SGD(model.parameters(), config.lr, momentum=config.momentum, weight_decay=config.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs, eta_min=1E-6)
+    optimizer = torch.optim.AdamW(model.parameters(), config.lr)
+    #lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs, eta_min=1E-6)
 
     best_top1 = 0.
     epoch =0
@@ -194,8 +194,8 @@ def main():
         print("----------------------------")
         pass
 
-    for epoch in range(0, epoch):
-        lr_scheduler.step()
+    #for epoch in range(0, epoch):
+        #lr_scheduler.step()
         
     for epoch in range(epoch, config.epochs):
         drop_prob = config.drop_path_prob * epoch / config.epochs
@@ -211,7 +211,7 @@ def main():
         # validation
         top1 = validate(logger, config, valid_loader, model, criterion, epoch, main_proc)
         best_top1 = max(best_top1, top1)
-        lr_scheduler.step()
+        #lr_scheduler.step()
 
     logger.info("Final best Prec@1 = %.4f", best_top1)
 
