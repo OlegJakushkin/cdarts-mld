@@ -105,6 +105,7 @@ class CdartsTrainer(object):
             logger = logging.getLogger(__name__)
         train_loader, valid_loader = loaders
         train_sampler, valid_sampler = samplers
+
         self.train_loader = CyclicIterator(train_loader, train_sampler, distributed)
         self.valid_loader = CyclicIterator(valid_loader, valid_sampler, distributed)
 
@@ -148,12 +149,12 @@ class CdartsTrainer(object):
         self.mutator_large = DartsDiscreteMutator(self.model_large, self.mutator_small).cuda()
         self.criterion = criterion
 
-        self.optimizer_small = torch.optim.SGD(self.model_small.parameters(), w_lr,
-                                               momentum=w_momentum, weight_decay=w_weight_decay)
-        self.optimizer_large = torch.optim.SGD(self.model_large.parameters(), nasnet_lr,
-                                               momentum=w_momentum, weight_decay=w_weight_decay)
-        self.optimizer_alpha = torch.optim.Adam(self.mutator_small.parameters(), alpha_lr,
-                                                betas=(0.5, 0.999), weight_decay=alpha_weight_decay)
+        self.optimizer_small = torch.optim.AdamW(self.model_small.parameters(), w_lr
+                                               )
+        self.optimizer_large = torch.optim.AdamW(self.model_large.parameters(), nasnet_lr
+                                              )
+        self.optimizer_alpha = torch.optim.AdamW(self.mutator_small.parameters(), alpha_lr
+                                               )
 
         if distributed:
             apex.parallel.convert_syncbn_model(self.model_small)
