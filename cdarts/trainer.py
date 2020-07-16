@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import apex  # pylint: disable=import-error
 from apex.parallel import DistributedDataParallel  # pylint: disable=import-error
+import apex.optimizers
 from nni.nas.pytorch.cdarts import RegularizedDartsMutator, RegularizedMutatorParallel, DartsDiscreteMutator  # pylint: disable=wrong-import-order
 from nni.nas.pytorch.utils import AverageMeterGroup  # pylint: disable=wrong-import-order
 
@@ -149,11 +150,11 @@ class CdartsTrainer(object):
         self.mutator_large = DartsDiscreteMutator(self.model_large, self.mutator_small).cuda()
         self.criterion = criterion
 
-        self.optimizer_small = torch.optim.AdamW(self.model_small.parameters(), w_lr
+        self.optimizer_small = apex.optimizers.FusedAdam(self.model_small.parameters(), w_lr
                                                )
-        self.optimizer_large = torch.optim.AdamW(self.model_large.parameters(), nasnet_lr
+        self.optimizer_large = apex.optimizers.FusedAdam(self.model_large.parameters(), nasnet_lr
                                               )
-        self.optimizer_alpha = torch.optim.AdamW(self.mutator_small.parameters(), alpha_lr
+        self.optimizer_alpha = apex.optimizers.FusedAdam(self.mutator_small.parameters(), alpha_lr
                                                )
 
         if distributed:
@@ -216,65 +217,115 @@ class CdartsTrainer(object):
                         param[i] = float("-inf")
 
     def _joint_train(self, epoch):
-        self.model_large.train()
-        self.model_small.train()
         meters = AverageMeterGroup()
         for step in range(self.steps_per_epoch):
             totall_lc = 0
             totall_lw = 0
             totall_li = 0
             totall_lr = 0
-            self.optimizer_alpha.zero_grad()
-            self.optimizer_large.zero_grad()
-            self.optimizer_small.zero_grad()
 
-            for fb in range(self.fake_batch):
-                trn_x, trn_y = next(self.train_loader)
-                val_x, val_y = next(self.valid_loader)
-                trn_x, trn_y = trn_x.cuda(), trn_y.cuda()
-                val_x, val_y = val_x.cuda(), val_y.cuda()
-
-                # step 1. optimize architecture
-
-                reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
+            loss_regular = self.mutator_small.reset_with_loss()
+            reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
                     (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
-                loss_regular = self.mutator_small.reset_with_loss() /self.fake_batch
-                if loss_regular:
-                    loss_regular *= reg_decay
-                logits_search, emsemble_logits_search = self.model_small(val_x)
-                logits_main, emsemble_logits_main = self.model_large(val_x)
-                loss_cls = (self.criterion(logits_search, val_y) + self.criterion(logits_main, val_y)) / self.loss_alpha /self.fake_batch
-                loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (self.loss_T ** 2) * self.loss_alpha / self.fake_batch
-                loss_cls.backward()
-                loss_interactive.backward()
-                loss_regular.backward()
-                loss = (loss_cls + loss_interactive + loss_regular)
-                totall_lc += loss_cls
-                totall_li += loss_interactive
-                totall_lr += loss_regular
+            if loss_regular:
+                loss_regular *= reg_decay
 
-                # NOTE: need to call here `self._reset_nan(self.mutator_small.parameters())` if `cut_choices`
+            def trn_s(totall_lc, totall_lw, totall_li, totall_lr):
+                self.model_small.train()
+                self.optimizer_alpha.zero_grad()
+                self.optimizer_small.zero_grad()
 
-                # step 2. optimize op weights
+                for fb in range(self.fake_batch):
+                    val_x, val_y = next(self.valid_loader)
+                    val_x, val_y = val_x.cuda(), val_y.cuda()
 
-                with torch.no_grad():
-                    # resample architecture since parameters have been changed
-                    self.mutator_small.reset_with_loss()
+                    # step 1. optimize architecture
 
-                logits_search_train, _ = self.model_small(trn_x)
-                loss_weight = self.criterion(logits_search_train, trn_y) / (self.fake_batch)
-                loss_weight.backward()
-                totall_lw += loss_weight
+                    reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
+                        (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
+                    loss_regular = self.mutator_small.reset_with_loss() /self.fake_batch
+                    if loss_regular:
+                        loss_regular *= reg_decay
+                    logits_search, emsemble_logits_search = self.model_small(val_x)
+                    logits_main, emsemble_logits_main = self.model_large(val_x)
+                    loss_cls = (self.criterion(logits_search, val_y) + self.criterion(logits_main, val_y)) / self.loss_alpha /self.fake_batch
+                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (self.loss_T ** 2) * self.loss_alpha / self.fake_batch
+                    loss_cls.backward(retain_graph=True)
+                    loss_interactive.backward(retain_graph=True)
+                    loss_regular.backward(retain_graph=True)
+                    totall_lc += float(loss_cls)
+                    totall_li += float(loss_interactive)
+                    totall_lr += float(loss_regular)
 
-            self._clip_grad_norm(self.model_large)
-            self.optimizer_large.step()
-            self.optimizer_alpha.step()
-            self._clip_grad_norm(self.model_small)
-            self.optimizer_small.step()
+                    # step 2. optimize op weights
+                    with torch.no_grad():
+                        # resample architecture since parameters have been changed
+                        self.mutator_small.reset_with_loss()
+
+                    val_x, val_y  = next(self.train_loader)
+                    val_x, val_y  = val_x.cuda(), val_y.cuda()
+                    logits_search_train, _ = self.model_small(val_x)
+                    loss_weight = self.criterion(logits_search_train, val_y) / (self.fake_batch)
+                    loss_weight.backward(retain_graph=True)
+                    totall_lw += float(loss_weight)
+
+                self.optimizer_alpha.step()
+                self._clip_grad_norm(self.model_small)
+                self.optimizer_small.step()
+                return totall_lc, totall_lw, totall_li, totall_lr
+
+            totall_lc, totall_lw, totall_li, totall_lr = trn_s(totall_lc, totall_lw, totall_li, totall_lr)
+
+            def trn_l(totall_lc, totall_lw, totall_li, totall_lr):
+                self.model_large.train()
+                self.optimizer_large.zero_grad()
+
+                for fb in range(self.fake_batch):
+                    val_x, val_y = next(self.valid_loader)
+                    val_x, val_y = val_x.cuda(), val_y.cuda()
+
+                    # step 1. optimize architecture
+                    reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
+                            (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
+                    loss_regular = self.mutator_small.reset_with_loss() / self.fake_batch
+                    if loss_regular:
+                        loss_regular *= reg_decay
+                    logits_search, emsemble_logits_search = self.model_small(val_x)
+                    logits_main, emsemble_logits_main = self.model_large(val_x)
+                    loss_cls = (self.criterion(logits_search, val_y) + self.criterion(logits_main,
+                                                                                      val_y)) / self.loss_alpha / self.fake_batch
+                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (
+                                self.loss_T ** 2) * self.loss_alpha / self.fake_batch
+                    loss_cls.backward(retain_graph=True)
+                    loss_interactive.backward(retain_graph=True)
+                    loss_regular.backward(retain_graph=True)
+                    totall_lc += float(loss_cls)
+                    totall_li += float(loss_interactive)
+                    totall_lr += float(loss_regular)
+
+                    # NOTE: need to call here `self._reset_nan(self.mutator_small.parameters())` if `cut_choices`
+
+                    # step 2. optimize op weights
+
+                    with torch.no_grad():
+                        # resample architecture since parameters have been changed
+                        self.mutator_small.reset_with_loss()
+                    val_x, val_y  = next(self.train_loader)
+                    val_x, val_y  = val_x.cuda(), val_y.cuda()
+                    logits_search_train, _ = self.model_small(val_x)
+                    loss_weight = self.criterion(logits_search_train, val_y) / (self.fake_batch)
+                    loss_weight.backward(retain_graph=True)
+                    totall_lw += float(loss_weight)
+
+                self._clip_grad_norm(self.model_large)
+                self.optimizer_large.step()
+                return totall_lc, totall_lw, totall_li, totall_lr
+
+            totall_lc, totall_lw, totall_li, totall_lr = trn_l(totall_lc, totall_lw, totall_li, totall_lr)
 
             metrics = {"loss_cls": totall_lc, "loss_interactive": totall_li,
                        "loss_regular": totall_lr, "loss_weight": totall_lw}
-            metrics = reduce_metrics(metrics, self.distributed)
+            #metrics = reduce_metrics(metrics, self.distributed)
             meters.update(metrics)
 
             if self.main_proc and (step % self.log_frequency == 0 or step + 1 == self.steps_per_epoch):
