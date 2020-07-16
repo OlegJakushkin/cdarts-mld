@@ -46,7 +46,7 @@ class CyclicIterator:
             return next(self.iterator)
 
 
-def train(logger, config, train_loader, model, optimizer, criterion, epoch, main_proc, fake_batch=4, steps=280):
+def train(logger, config, train_loader, model, optimizer, criterion, epoch, main_proc, fake_batch=4, steps=128):
     meters = AverageMeterGroup()
     cur_lr = optimizer.param_groups[0]["lr"]
     if main_proc:
@@ -54,27 +54,40 @@ def train(logger, config, train_loader, model, optimizer, criterion, epoch, main
 
     model.train()
     for step in range(steps):
-        totall_l =0
-        for fb in range(fake_batch):
-            x, y = next(train_loader)
-            x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
-            optimizer.zero_grad()
-            logits, aux_logits = model(x)
-            loss = criterion(logits, y)
-            if config.aux_weight > 0.:
-                loss += config.aux_weight * criterion(aux_logits, y)
-            loss = loss/fake_batch
-            try:
-                loss.backward()
-            except:
-                break;
-            totall_l += loss
-            nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-        optimizer.step()
+        totall_l = 0
+        totall_p = 0
 
-        prec1, prec1 = utils.accuracy(logits, y, topk=(1, 1))
-        metrics = {"prec1": prec1, "loss": totall_l}
-        metrics = utils.reduce_metrics(metrics, config.distributed)
+        def top(totall_l, totall_p):
+            optimizer.zero_grad()
+
+            def s(totall_l, totall_p):
+                x, y = next(train_loader)
+                x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
+                logits, aux_logits = model(x)
+                loss = criterion(logits, y)
+                if config.aux_weight > 0.:
+                    loss += config.aux_weight * criterion(aux_logits, y)
+                loss = loss / fake_batch
+                try:
+                    prec1, prec1 = utils.accuracy(logits, y, topk=(1, 1))
+                    prec1 = prec1 / fake_batch
+                    totall_p += prec1
+                    loss.backward(retain_graph=True)
+                    totall_l += float(loss)
+                except:
+                    print("Err")
+                    pass
+                return totall_l, totall_p
+
+            for fb in range(fake_batch):
+                totall_l, totall_p = s(totall_l, totall_p)
+            optimizer.step()
+            return totall_l, totall_p
+
+        totall_l, totall_p = top(totall_l, totall_p)
+        nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+        metrics = {"prec1": totall_p, "loss": totall_l}
+        # metrics = utils.reduce_metrics(metrics, config.distributed)
         meters.update(metrics)
 
         if main_proc and (step % config.log_frequency == 0 or step + 1 == len(train_loader)):
@@ -101,13 +114,14 @@ def validate(logger, config, valid_loader, model, criterion, epoch, main_proc):
             x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
             logits, _ = model(x)
             loss = criterion(logits, y)
-            prec1,prec1  = utils.accuracy(logits, y, topk=(1, 1))
+            prec1, prec1 = utils.accuracy(logits, y, topk=(1, 1))
             metrics = {"prec1": prec1, "loss": loss}
             metrics = utils.reduce_metrics(metrics, config.distributed)
             meters.update(metrics)
 
             if main_proc and (step % config.log_frequency == 0 or step + 1 == len(valid_loader)):
-                logger.info("v Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, len(valid_loader), meters)
+                logger.info("v Epoch [%d/%d] Step [%d/%d]  %s", epoch + 1, config.epochs, step + 1, len(valid_loader),
+                            meters)
 
     if main_proc:
         torch.save(model, 'model_final' + '.pt')
@@ -135,9 +149,10 @@ def main():
     train_loader, valid_loader = loaders
     train_sampler, valid_sampler = samplers
     train_loader = CyclicIterator(train_loader, train_sampler)
-    #valid_loader = CyclicIterator(valid_loader, valid_sampler, False)
+    # valid_loader = CyclicIterator(valid_loader, valid_sampler, False)
 
-    model = Model(config.dataset, config.layers, in_channels=config.input_channels, channels=config.init_channels, retrain=True).cuda()
+    model = Model(config.dataset, config.layers, in_channels=config.input_channels, channels=config.init_channels,
+                  retrain=True).cuda()
     if config.label_smooth > 0:
         criterion = utils.CrossEntropyLabelSmooth(config.n_classes, config.label_smooth)
     else:
@@ -150,7 +165,7 @@ def main():
     genotypes = utils.parse_results(fixed_arc, n_nodes=4)
     genotypes_dict = {i: genotypes for i in range(3)}
     apply_fixed_architecture(model, fixed_arc_path)
-    param_size = utils.param_size(model, criterion,  [3, 512, 512])
+    param_size = utils.param_size(model, criterion, [3, 512, 512])
 
     if main_proc:
         logger.info("Param size: %.6f", param_size)
@@ -173,10 +188,10 @@ def main():
         model = DistributedDataParallel(model, delay_allreduce=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), config.lr)
-    #lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs, eta_min=1E-6)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs, eta_min=1E-6)
 
     best_top1 = 0.
-    epoch =0
+    epoch = 0
     try:
         checkpoint = torch.load(config.model_checkpoint)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -194,9 +209,9 @@ def main():
         print("----------------------------")
         pass
 
-    #for epoch in range(0, epoch):
-        #lr_scheduler.step()
-        
+    # for epoch in range(0, epoch):
+    # lr_scheduler.step()
+
     for epoch in range(epoch, config.epochs):
         drop_prob = config.drop_path_prob * epoch / config.epochs
         if config.distributed:
@@ -207,13 +222,12 @@ def main():
         if config.distributed:
             train_sampler.set_epoch(epoch)
         train(logger, config, train_loader, model, optimizer, criterion, epoch, main_proc)
-
-        # validation
-        top1 = validate(logger, config, valid_loader, model, criterion, epoch, main_proc)
-        best_top1 = max(best_top1, top1)
-        #lr_scheduler.step()
-
-    logger.info("Final best Prec@1 = %.4f", best_top1)
+        if (epoch % config.log_frequency == 0):
+            # validation
+            top1 = validate(logger, config, valid_loader, model, criterion, epoch, main_proc)
+            best_top1 = max(best_top1, top1)
+            # lr_scheduler.step()
+            logger.info("Final best Prec@1 = %.4f", best_top1)
 
 
 if __name__ == "__main__":
