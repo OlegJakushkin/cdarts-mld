@@ -230,51 +230,10 @@ class CdartsTrainer(object):
             if loss_regular:
                 loss_regular *= reg_decay
 
-            def trn_s(totall_lc, totall_lw, totall_li, totall_lr):
-                self.model_small.train()
-                self.optimizer_alpha.zero_grad()
-                self.optimizer_small.zero_grad()
-
-                for fb in range(self.fake_batch):
-                    val_x, val_y = next(self.valid_loader)
-                    val_x, val_y = val_x.cuda(), val_y.cuda()
-
-                    # step 1. optimize architecture
-
-                    reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
-                        (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
-                    loss_regular = self.mutator_small.reset_with_loss() /self.fake_batch
-                    if loss_regular:
-                        loss_regular *= reg_decay
-                    logits_search, emsemble_logits_search = self.model_small(val_x)
-                    logits_main, emsemble_logits_main = self.model_large(val_x)
-                    loss_cls = (self.criterion(logits_search, val_y) + self.criterion(logits_main, val_y)) / self.loss_alpha /self.fake_batch
-                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (self.loss_T ** 2) * self.loss_alpha / self.fake_batch
-                    loss_cls.backward(retain_graph=True)
-                    loss_interactive.backward(retain_graph=True)
-                    loss_regular.backward(retain_graph=True)
-                    totall_lc += float(loss_cls)
-                    totall_li += float(loss_interactive)
-                    totall_lr += float(loss_regular)
-
-                    # step 2. optimize op weights
-                    with torch.no_grad():
-                        # resample architecture since parameters have been changed
-                        self.mutator_small.reset_with_loss()
-
-                    val_x, val_y  = next(self.train_loader)
-                    val_x, val_y  = val_x.cuda(), val_y.cuda()
-                    logits_search_train, _ = self.model_small(val_x)
-                    loss_weight = self.criterion(logits_search_train, val_y) / (self.fake_batch)
-                    loss_weight.backward(retain_graph=True)
-                    totall_lw += float(loss_weight)
-
-                self.optimizer_alpha.step()
-                self._clip_grad_norm(self.model_small)
-                self.optimizer_small.step()
-                return totall_lc, totall_lw, totall_li, totall_lr
-
-            totall_lc, totall_lw, totall_li, totall_lr = trn_s(totall_lc, totall_lw, totall_li, totall_lr)
+            samples_x = []
+            samples_y = []
+            criterion_l = []
+            emsemble_logits_l = []
 
             def trn_l(totall_lc, totall_lw, totall_li, totall_lr):
                 self.model_large.train()
@@ -284,18 +243,48 @@ class CdartsTrainer(object):
                     val_x, val_y = next(self.valid_loader)
                     val_x, val_y = val_x.cuda(), val_y.cuda()
 
-                    # step 1. optimize architecture
+                    logits_main, emsemble_logits_main = self.model_large(val_x)
+                    cel = self.criterion(logits_main, val_y)
+                    loss_weight = cel / (self.fake_batch)
+                    loss_weight.backward(retain_graph=True)
+
+                    criterion_l.append(cel.cpu())
+                    emsemble_logits_l.append(emsemble_logits_main.cpu())
+
+                    totall_lw += float(loss_weight)
+                    samples_x.append(val_x.cpu())
+                    samples_y.append(val_y.cpu())
+
+                self._clip_grad_norm(self.model_large)
+                self.optimizer_large.step()
+                self.model_large.train(mode=False)
+
+                return totall_lc, totall_lw, totall_li, totall_lr
+
+            totall_lc, totall_lw, totall_li, totall_lr = trn_l(totall_lc, totall_lw, totall_li, totall_lr)
+
+
+            def trn_s(totall_lc, totall_lw, totall_li, totall_lr):
+                self.model_small.train()
+                self.optimizer_alpha.zero_grad()
+                self.optimizer_small.zero_grad()
+
+                for i in range(len(samples_x)):
+                    val_x = samples_x[i].cuda()
+                    val_y = samples_y[i].cuda()
+
                     reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
-                            (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
-                    loss_regular = self.mutator_small.reset_with_loss() / self.fake_batch
+                        (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
+                    loss_regular = self.mutator_small.reset_with_loss() /self.fake_batch
                     if loss_regular:
                         loss_regular *= reg_decay
                     logits_search, emsemble_logits_search = self.model_small(val_x)
-                    logits_main, emsemble_logits_main = self.model_large(val_x)
-                    loss_cls = (self.criterion(logits_search, val_y) + self.criterion(logits_main,
-                                                                                      val_y)) / self.loss_alpha / self.fake_batch
-                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (
-                                self.loss_T ** 2) * self.loss_alpha / self.fake_batch
+
+                    criterion_logits_main = criterion_l[i].cuda()
+                    emsemble_logits_main = emsemble_logits_l[i].cuda()
+                    cls = self.criterion(logits_search, val_y)
+                    loss_cls = (cls + criterion_logits_main) / self.loss_alpha /self.fake_batch
+                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (self.loss_T ** 2) * self.loss_alpha / self.fake_batch
                     loss_cls.backward(retain_graph=True)
                     loss_interactive.backward(retain_graph=True)
                     loss_regular.backward(retain_graph=True)
@@ -303,25 +292,22 @@ class CdartsTrainer(object):
                     totall_li += float(loss_interactive)
                     totall_lr += float(loss_regular)
 
-                    # NOTE: need to call here `self._reset_nan(self.mutator_small.parameters())` if `cut_choices`
-
-                    # step 2. optimize op weights
-
-                    with torch.no_grad():
-                        # resample architecture since parameters have been changed
-                        self.mutator_small.reset_with_loss()
-                    val_x, val_y  = next(self.train_loader)
-                    val_x, val_y  = val_x.cuda(), val_y.cuda()
-                    logits_search_train, _ = self.model_small(val_x)
-                    loss_weight = self.criterion(logits_search_train, val_y) / (self.fake_batch)
-                    loss_weight.backward(retain_graph=True)
+                    loss_weight = cls / (self.fake_batch)
                     totall_lw += float(loss_weight)
 
-                self._clip_grad_norm(self.model_large)
-                self.optimizer_large.step()
+                self.optimizer_alpha.step()
+                self._clip_grad_norm(self.model_small)
+                self.optimizer_small.step()
+                self.model_small.train(mode=False)
+                samples_x.clear()
+                samples_y.clear()
+                criterion_l.clear()
+                emsemble_logits_l.clear()
                 return totall_lc, totall_lw, totall_li, totall_lr
 
-            totall_lc, totall_lw, totall_li, totall_lr = trn_l(totall_lc, totall_lw, totall_li, totall_lr)
+            totall_lc, totall_lw, totall_li, totall_lr = trn_s(totall_lc, totall_lw, totall_li, totall_lr)
+
+
 
             metrics = {"loss_cls": totall_lc, "loss_interactive": totall_li,
                        "loss_regular": totall_lr, "loss_weight": totall_lw}
