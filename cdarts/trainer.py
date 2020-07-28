@@ -150,10 +150,10 @@ class CdartsTrainer(object):
         self.mutator_large = DartsDiscreteMutator(self.model_large, self.mutator_small).cuda()
         self.criterion = criterion
 
-        self.optimizer_small = apex.optimizers.FusedAdam(self.model_small.parameters(), w_lr
-                                               )
-        self.optimizer_large = apex.optimizers.FusedAdam(self.model_large.parameters(), nasnet_lr
-                                              )
+        self.optimizer_small =apex.optimizers.FusedSGD(self.model_small.parameters(), w_lr,
+                                               momentum=w_momentum, weight_decay=w_weight_decay)
+        self.optimizer_large = apex.optimizers.FusedSGD(self.model_large.parameters(), nasnet_lr,
+                                               momentum=w_momentum, weight_decay=w_weight_decay)
         self.optimizer_alpha = apex.optimizers.FusedAdam(self.mutator_small.parameters(), alpha_lr
                                                )
 
