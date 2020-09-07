@@ -4,8 +4,9 @@
 import json
 import logging
 import os
-
+import time
 import torch
+import torch.cuda
 import torch.nn as nn
 import torch.nn.functional as F
 import apex  # pylint: disable=import-error
@@ -236,6 +237,7 @@ class CdartsTrainer(object):
             emsemble_logits_l = []
 
             def trn_l(totall_lc, totall_lw, totall_li, totall_lr):
+
                 self.model_large.train()
                 self.optimizer_large.zero_grad()
 
@@ -262,38 +264,76 @@ class CdartsTrainer(object):
                 return totall_lc, totall_lw, totall_li, totall_lr
 
             totall_lc, totall_lw, totall_li, totall_lr = trn_l(totall_lc, totall_lw, totall_li, totall_lr)
-
+            def sleep(s):
+                print("--" + str(s))
+                time.sleep(2)
+                print(torch.cuda.memory_summary())
+                print("++" + str(s))
 
             def trn_s(totall_lc, totall_lw, totall_li, totall_lr):
+                print("sts")
+                self.model_small.cuda()
                 self.model_small.train()
                 self.optimizer_alpha.zero_grad()
                 self.optimizer_small.zero_grad()
-
-                for i in range(len(samples_x)):
-                    val_x = samples_x[i].cuda()
-                    val_y = samples_y[i].cuda()
-
+                i = 0;
+                ls = []
+                els = []
+                sleep(0)
+                def sc():
                     reg_decay = max(self.regular_coeff * (1 - float(epoch - self.warmup_epochs) / (
-                        (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
-                    loss_regular = self.mutator_small.reset_with_loss() /self.fake_batch
+                            (self.epochs - self.warmup_epochs) * self.regular_ratio)), 0)
+                    loss_regular = self.mutator_small.reset_with_loss()
                     if loss_regular:
                         loss_regular *= reg_decay
+                    loss_regular.backward()
+                    loss_regular = loss_regular.cpu().detach()
+                sc()
+                sleep(0.5)
+                for i in range(len(samples_x)):
+                    val_x = samples_x[i]
+                    val_x = val_x.cuda()
+                    val_y = samples_y[i]
+                    val_y = val_y.cuda()
+
+
                     logits_search, emsemble_logits_search = self.model_small(val_x)
-
-                    criterion_logits_main = criterion_l[i].cuda()
-                    emsemble_logits_main = emsemble_logits_l[i].cuda()
                     cls = self.criterion(logits_search, val_y)
-                    loss_cls = (cls + criterion_logits_main) / self.loss_alpha /self.fake_batch
-                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (self.loss_T ** 2) * self.loss_alpha / self.fake_batch
-                    loss_cls.backward(retain_graph=True)
-                    loss_interactive.backward(retain_graph=True)
-                    loss_regular.backward(retain_graph=True)
-                    totall_lc += float(loss_cls)
-                    totall_li += float(loss_interactive)
-                    totall_lr += float(loss_regular)
 
+                    ls.append(cls.cpu())
+                    els.append(emsemble_logits_search.cpu())
+                    val_x.cpu().detach()
+                    val_y.cpu().detach()
+
+                sleep(1)
+                for i in range(len(samples_x)):
+                    criterion_logits_main = criterion_l[i].cuda()
+                    cls = ls[i].cuda()
+                    emsemble_logits_search = els[i].cuda()
                     loss_weight = cls / (self.fake_batch)
                     totall_lw += float(loss_weight)
+                    loss_cls = (cls + criterion_logits_main) / self.loss_alpha / self.fake_batch
+                    loss_cls.backward(retain_graph=True)
+                    totall_lc += float(loss_cls)
+                    criterion_logits_main.cpu().detach()
+
+                sleep(2)
+                for i in range(len(samples_x)):
+                    emsemble_logits_main = emsemble_logits_l[i].cuda()
+                    emsemble_logits_search = els[i].cuda()
+                    sleep(3)
+                    loss_interactive = self.interactive_loss(emsemble_logits_search, emsemble_logits_main) * (
+                                self.loss_T ** 2) * self.loss_alpha / self.fake_batch
+                    loss_interactive.backward(retain_graph=True)
+                    sleep(5)
+                    emsemble_logits_search.cpu()
+                    totall_li += float(loss_interactive)
+                    totall_lr += float(loss_regular)
+                    emsemble_logits_search.cpu().detach()
+                    emsemble_logits_main.cpu().detach()
+                    sleep(6)
+                    i = i + 1
+
 
                 self.optimizer_alpha.step()
                 self._clip_grad_norm(self.model_small)

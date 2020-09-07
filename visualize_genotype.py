@@ -71,5 +71,5 @@ if __name__ == '__main__':
     except AttributeError:
         raise ValueError("Cannot parse {}".format(genotype_str))
 
-    plot(genotype.normal, "normal")
-    plot(genotype.reduce, "reduction")
+    plot(genotype.normal, "normal3")
+    plot(genotype.reduce, "reduction3")

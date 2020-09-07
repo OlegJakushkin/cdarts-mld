@@ -25,7 +25,7 @@ def _mld_dataset(config):
     train_data = dset.ImageFolder(
         train_dir,
         transforms.Compose([
-            #transforms.Resize((224,224)),
+            transforms.Resize((224,224)),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
@@ -34,7 +34,7 @@ def _mld_dataset(config):
     test_data = dset.ImageFolder(
         test_dir,
         transforms.Compose([
-            #transforms.Resize((224,224)),
+            transforms.Resize((224,224)),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),

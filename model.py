@@ -135,9 +135,20 @@ class Model(nn.Module):
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.linear = nn.Linear(channels_p, self.n_classes)
 
+    def cpu(self):
+        for i, cell in enumerate(self.cells):
+            cell.cpu()
+        return super(Model, self).cpu()
+
+    def cuda(self):
+        for i, cell in enumerate(self.cells):
+            cell.cuda()
+        return super(Model, self).cuda()
+
     def forward(self, x):
         s0 = s1 = self.stem(x)
         outputs = []
+
 
         for i, cell in enumerate(self.cells):
             s0, s1 = s1, cell(s0, s1)

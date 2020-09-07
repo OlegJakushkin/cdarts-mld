@@ -2,185 +2,74 @@ import random as r
 import os
 import pandas as pd
 import time
-
-def generate_partitions():
+from gensim.summarization import keywords
+from gpt2_client import GPT2Client
+import gpt_2_simple as gpt2
+import swifter
+def parse_csv():
     df = pd.read_csv("./train.csv")
     print(df.head(5))
-    mapping = {k: v for v, k in enumerate(df.diagnosis.unique())}
-    df['diagnosis_e'] = df.diagnosis.map(mapping)
+    def kwp(text):
+        line = ', '.join(keywords(text, words=13).split('\n'))
+        return line
 
-    mapping2 = {k: v for v, k in enumerate(df.anatom_site_general_challenge.unique())}
-    df['anatom_site_general_challenge_e'] = df.anatom_site_general_challenge.map(mapping2)
+    df['keywords'] = df['abstract'].swifter.apply()
+    df.to_csv("parsed.csv")
 
-    is_female =  df['sex']=='female'
-    is_male = df['sex'] == 'male'
-    is_ill = df['target'] == 1
-    is_not_ill = df['target'] == 0
-    print(df[is_ill & is_female].shape)
-    print(df[is_ill & is_male].shape)
-    print(df[is_ill ].shape)
+def generate_text_corpus():
+    df = pd.read_csv("./parsed.csv")
+    print(df.head(5))
+    text = ''
+    i = 0
 
-    ifv_value_count = {6: 1,
-                       4: 1,
-                       3: 15,
-                       2: 10,
-                       1: 10,
-                       0: 5
-                       }
-
-    imv_value_count = {5: 2,
-                       4: 2,
-                       3: 30,
-                       2: 12,
-                       1: 12,
-                       0: 10
-                       }
-
-    cgv_value_count = {6: 5,
-                       5: 5,
-                       4: 5,
-                       3: 100,
-                       2: 50,
-                       1: 50,
-                       0: 16
-                       }
-
-    cgt_value_count = {6: 25,
-                       5: 25,
-                       4: 25,
-                       3: 500,
-                       2: 250,
-                       1: 250,
-                       0: 80
-                       }
-
-    def target_indices(f, value_count):
-        indices = []
-        for index, row in f.iterrows():
-            for key in value_count:
-                if key == row['anatom_site_general_challenge_e'] and value_count[key] > 0:
-                    indices.append(index)
-                    value_count[key] -= 1
-        return (indices)
+    for index, row in df.iterrows():
+        line = ''
+        line  += "<KEYS:> " + row['keywords']
+        line += "; <TITLE:> " + row['title'] + " <END>"
+        line  += "\n"
+        text += line;
+        i = i + 1
+        if i % 1000 == 0:
+            print("stage 2: " + str(i))
+            print("sample: " + line)
+    outF = open("parsed-train.txt", "w")
+    outF.write(text)
+    outF.close()
 
 
-    print(df.diagnosis.unique())
-    print(df[is_ill & is_male]['anatom_site_general_challenge_e'].value_counts())
-    print("mmmmmmmmmmmmmmm")
-    print(df[is_ill & is_female]['anatom_site_general_challenge_e'].value_counts())
+class GPT2EC(GPT2Client):
+    def __init__(self,  **kwargs):
+        GPT2Client.__init__(self, **kwargs)
 
-    def restore(f) :
-        fn = "./tmp_"+str( r.randrange(100)  )+".csv"
-        f.to_csv(fn)
-        time.sleep(1)
-        of = pd.read_csv(fn)
-        #os.remove(fn)
-        return of
-    df = pd.read_csv("./train.csv")
-    mapping2 = {k: v for v, k in enumerate(df.anatom_site_general_challenge.unique())}
-    df['anatom_site_general_challenge_e'] = df.anatom_site_general_challenge.map(mapping2)
-    df = df.sample(frac=1).reset_index(drop=True)
-    is_female = df['sex'] == 'female'
-    is_male = df['sex'] == 'male'
-    is_ill = df['target'] == 1
-    is_not_ill = df['target'] == 0
+    def finetune(self, corpus, steps=1000, return_text=True):
+        sess = gpt2.start_tf_sess()
+        gpt2.finetune(sess,
+                corpus,
+                model_name=self.model_name,
+                steps=steps,
+                multi_gpu=True)     # steps is max number of training steps
 
-    dfif = restore(df[is_ill & is_female])
+        if return_text:
+            text = gpt2.generate(sess, return_as_list=True)
+            return text
+        else:
+            gpt2.generate(sess)
 
-    indices = target_indices(dfif, ifv_value_count)
-    print(indices)
-    dfift = dfif.drop(indices).copy()
-    print(dfift.shape)
-    dfim = restore(df[is_ill & is_male])
-    indices = target_indices(dfim, imv_value_count)
-    dfimt = dfim.drop(indices).copy()
-    print(dfimt.shape)
+    def load(self, sess):
+        sess = gpt2.start_tf_sess()
+        gpt2.load_gpt2(sess)
 
-    dfcm = restore(df[is_not_ill & is_male])
-    indices = target_indices(dfcm, cgt_value_count)
-    dfcmtt = dfcm.iloc[indices].copy()
-    print(dfcmtt.shape)
-    cgt_value_count = {6: 25,
-                       5: 25,
-                       4: 25,
-                       3: 500,
-                       2: 250,
-                       1: 250,
-                       0: 80
-                       }
-    dfcf = restore(df[is_not_ill & is_female])
-    indices = target_indices(dfcf, cgt_value_count)
-    dfcft = dfcf.iloc[indices].copy()
+        gpt2.generate(sess)
 
-    train_frames = [ dfimt, dfift, dfcmtt, dfcft ]
+def train_on_corpus():
+    gpt2c = GPT2EC('1558M', save_dir='models') # This could also be `345M`, `774M`, or `1558M`
+    gpt2c.load_model()
+    my_corpus = './parsed-train.txt' # path to corpus
+    custom_text = gpt2c.finetune(my_corpus, 5000) # Load your custom dataset
 
-    train = pd.concat(train_frames, sort=True)
-    print(train.shape)
 
-    train.to_csv("./filtered_train.csv")
-
-    df = pd.read_csv("./train.csv")
-    mapping2 = {k: v for v, k in enumerate(df.anatom_site_general_challenge.unique())}
-    df['anatom_site_general_challenge_e'] = df.anatom_site_general_challenge.map(mapping2)
-    df = df.sample(frac=1).reset_index(drop=True)
-    df = df.sample(frac=1).reset_index(drop=True)
-    is_female =  df['sex']=='female'
-    is_male = df['sex'] == 'male'
-    is_ill = df['target'] == 1
-    is_not_ill = df['target'] == 0
-    cgt_value_count = {6: 25,
-                       5: 25,
-                       4: 25,
-                       3: 500,
-                       2: 250,
-                       1: 250,
-                       0: 80
-                       }
-
-    cgv_value_count = {6: 5,
-                       5: 5,
-                       4: 5,
-                       3: 100,
-                       2: 50,
-                       1: 50,
-                       0: 16
-                       }
-    dmcm = restore(df[is_not_ill & is_male])
-    indices = target_indices(dmcm, cgt_value_count)
-    dfcmt = dmcm.iloc[indices].copy()
-
-    dfcmtl = restore(dmcm.drop(indices))
-    indices = target_indices(dfcmtl, cgv_value_count)
-    dfcmv = dfcmtl.iloc[indices].copy()
-    cgt_value_count = {6: 25,
-                       5: 25,
-                       4: 25,
-                       3: 500,
-                       2: 250,
-                       1: 250,
-                       0: 80
-                       }
-
-    cgv_value_count = {6: 5,
-                       5: 5,
-                       4: 5,
-                       3: 100,
-                       2: 50,
-                       1: 50,
-                       0: 16
-                       }
-
-    dfcm = restore(df[is_not_ill & is_female])
-    indices = target_indices(dfcm, cgt_value_count)
-    dfcft = dfcm.iloc[indices].copy()
-
-    dfcftl = restore(dfcm.drop(indices))
-    indices = target_indices(dfcftl, cgv_value_count)
-    dfcfv = dfcftl.iloc[indices].copy()
-
-    valid_frames = [restore(df[is_ill]), dfcmt, dfcmv, dfcft,  dfcfv]
-    valid = pd.concat(valid_frames, sort=True)
-    print(valid.shape)
-    valid.to_csv("./filtered_valid.csv")
-
-generate_partitions()
+parse_csv()
+print("\n---\nparsed!\n---\n")
+generate_text_corpus()
+print("\n---\ngenerated corpys!\n---\n")
+train_on_corpus()
